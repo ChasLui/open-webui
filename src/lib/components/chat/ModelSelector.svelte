@@ -1,19 +1,29 @@
 <script lang="ts">
-	import { Collapsible } from 'bits-ui';
-
-	import { setDefaultModels } from '$lib/apis/configs';
-	import { models, showSettings, settings, user, mobile } from '$lib/stores';
-	import { onMount, tick, getContext } from 'svelte';
+	import { models, pinnedModels, settings, user } from '$lib/stores';
+	import { getContext } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import Selector from './ModelSelector/Selector.svelte';
-	import Tooltip from '../common/Tooltip.svelte';
 
+	import { updateUserSettings } from '$lib/apis/users';
+	import { resolveLocalizedModelName } from '$lib/utils/localizedContent';
+	import equal from 'fast-deep-equal';
 	const i18n = getContext('i18n');
 
 	export let selectedModels = [''];
+	export let onModelSelect: (models: string[]) => void = () => {};
 	export let disabled = false;
+	export let multipleEnabled = true;
 
 	export let showSetDefault = true;
+	export let triggerClassName = 'text-lg';
+	export let className = undefined;
+	export let placement: 'top' | 'bottom' | 'auto' = 'bottom';
+	export let align: 'start' | 'end' = 'start';
+
+	let compareModels = selectedModels.length > 1;
+	let selector;
+
+	export const open = () => selector?.open();
 
 	const saveDefaultModel = async () => {
 		const hasEmptyModel = selectedModels.filter((it) => it === '');
@@ -22,94 +32,64 @@
 			return;
 		}
 		settings.set({ ...$settings, models: selectedModels });
-		localStorage.setItem('settings', JSON.stringify($settings));
+		await updateUserSettings(localStorage.token, { ui: { models: selectedModels } });
 
-		if ($user.role === 'admin') {
-			console.log('setting default models globally');
-			await setDefaultModels(localStorage.token, selectedModels.join(','));
-		}
 		toast.success($i18n.t('Default model updated'));
 	};
 
+	const pinModelHandler = async (modelId) => {
+		settings.set({
+			...$settings,
+			pinnedModels: $pinnedModels.includes(modelId)
+				? $pinnedModels.filter((id) => id !== modelId)
+				: [...$pinnedModels, modelId]
+		});
+		await updateUserSettings(localStorage.token, { ui: { pinnedModels: $settings.pinnedModels } });
+	};
+
 	$: if (selectedModels.length > 0 && $models.length > 0) {
-		selectedModels = selectedModels.map((model) =>
+		const _selectedModels = selectedModels.map((model) =>
 			$models.map((m) => m.id).includes(model) ? model : ''
 		);
+
+		if (!equal(_selectedModels, selectedModels)) {
+			selectedModels = _selectedModels;
+		}
+	}
+
+	$: if (selectedModels.length > 1 && !compareModels) {
+		compareModels = true;
 	}
 </script>
 
-<div class="flex flex-col w-full items-center md:items-start">
-	{#each selectedModels as selectedModel, selectedModelIdx}
-		<div class="flex w-full max-w-fit">
-			<div class="overflow-hidden w-full">
-				<div class="mr-1 max-w-full">
-					<Selector
-						placeholder={$i18n.t('Select a model')}
-						items={$models
-							.filter((model) => model.name !== 'hr')
-							.map((model) => ({
-								value: model.id,
-								label: model.name,
-								info: model
-							}))}
-						bind:value={selectedModel}
-					/>
-				</div>
+<div class="flex min-w-0 max-w-full flex-col items-start">
+	<div class="flex min-w-0 max-w-full">
+		<div class="min-w-0 max-w-full overflow-hidden">
+			<div class="min-w-0 max-w-full">
+				<Selector
+					bind:this={selector}
+					id="model"
+					placeholder={$i18n.t('Select a model')}
+					items={$models.map((model) => ({
+						value: model.id,
+						label: resolveLocalizedModelName(model, $i18n.language),
+						model: model
+					}))}
+					{pinModelHandler}
+					{className}
+					{triggerClassName}
+					{placement}
+					{align}
+					{showSetDefault}
+					onSetDefault={saveDefaultModel}
+					multipleEnabled={multipleEnabled &&
+						($user?.role === 'admin' || ($user?.permissions?.chat?.multiple_models ?? true))}
+					{disabled}
+					bind:compareEnabled={compareModels}
+					bind:values={selectedModels}
+					{onModelSelect}
+				/>
 			</div>
-
-			{#if selectedModelIdx === 0}
-				<div class="  self-center mr-2 disabled:text-gray-600 disabled:hover:text-gray-600">
-					<Tooltip content={$i18n.t('Add Model')}>
-						<button
-							class=" "
-							{disabled}
-							on:click={() => {
-								selectedModels = [...selectedModels, ''];
-							}}
-						>
-							<svg
-								xmlns="http://www.w3.org/2000/svg"
-								fill="none"
-								viewBox="0 0 24 24"
-								stroke-width="2"
-								stroke="currentColor"
-								class="size-3.5"
-							>
-								<path stroke-linecap="round" stroke-linejoin="round" d="M12 6v12m6-6H6" />
-							</svg>
-						</button>
-					</Tooltip>
-				</div>
-			{:else}
-				<div class="  self-center disabled:text-gray-600 disabled:hover:text-gray-600 mr-2">
-					<Tooltip content={$i18n.t('Remove Model')}>
-						<button
-							{disabled}
-							on:click={() => {
-								selectedModels.splice(selectedModelIdx, 1);
-								selectedModels = selectedModels;
-							}}
-						>
-							<svg
-								xmlns="http://www.w3.org/2000/svg"
-								fill="none"
-								viewBox="0 0 24 24"
-								stroke-width="2"
-								stroke="currentColor"
-								class="size-3.5"
-							>
-								<path stroke-linecap="round" stroke-linejoin="round" d="M19.5 12h-15" />
-							</svg>
-						</button>
-					</Tooltip>
-				</div>
-			{/if}
 		</div>
-	{/each}
-</div>
-
-{#if showSetDefault && !$mobile}
-	<div class="text-left mt-0.5 ml-1 text-[0.7rem] text-gray-500">
-		<button on:click={saveDefaultModel}> {$i18n.t('Set as default')}</button>
 	</div>
-{/if}
+</div>

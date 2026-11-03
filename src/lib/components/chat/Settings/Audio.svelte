@@ -1,8 +1,17 @@
 <script lang="ts">
-	import { getAudioConfig, updateAudioConfig } from '$lib/apis/audio';
-	import { user } from '$lib/stores';
-	import { createEventDispatcher, onMount, getContext } from 'svelte';
 	import { toast } from 'svelte-sonner';
+	import { createEventDispatcher, onMount, getContext } from 'svelte';
+
+	import { user, settings, config, visibleControls } from '$lib/stores';
+	import { getVoices as _getVoices } from '$lib/apis/audio';
+
+	import Switch from '$lib/components/common/Switch.svelte';
+	import Spinner from '$lib/components/common/Spinner.svelte';
+	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import UserSettingField from './UserSettingField.svelte';
+	import UserSettingRow from './UserSettingRow.svelte';
+	import SettingsSelect from '$lib/components/common/SettingsSelect.svelte';
+	import UserSettingSection from './UserSettingSection.svelte';
 	const dispatch = createEventDispatcher();
 
 	const i18n = getContext('i18n');
@@ -10,344 +19,393 @@
 	export let saveSettings: Function;
 
 	// Audio
-
-	let OpenAIUrl = '';
-	let OpenAIKey = '';
-
-	let STTEngines = ['', 'openai'];
-	let STTEngine = '';
-
 	let conversationMode = false;
 	let speechAutoSend = false;
 	let responseAutoPlayback = false;
+	let nonLocalVoices = false;
 
-	let TTSEngines = ['', 'openai'];
+	let STTEngine = '';
+	let STTLanguage = '';
+
 	let TTSEngine = '';
+	let TTSEngineConfig = {};
+
+	let TTSModel = null;
+	let TTSModelProgress = null;
+	let TTSModelLoading = false;
 
 	let voices = [];
-	let speaker = '';
-	let models = [];
-	let model = '';
+	let voice = '';
 
-	const getOpenAIVoices = () => {
-		voices = [
-			{ name: 'alloy' },
-			{ name: 'echo' },
-			{ name: 'fable' },
-			{ name: 'onyx' },
-			{ name: 'nova' },
-			{ name: 'shimmer' }
-		];
-	};
+	// Audio speed control
+	let playbackRate = 1;
+	const inputClass =
+		'h-7 w-full rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-xs text-gray-700 outline-hidden transition-colors placeholder:text-gray-300 focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:placeholder:text-gray-700 dark:focus:border-blue-500';
 
-	const getOpenAIVoicesModel = () => {
-		models = [{ name: 'tts-1' }, { name: 'tts-1-hd' }];
-	};
-
-	const getWebAPIVoices = () => {
-		const getVoicesLoop = setInterval(async () => {
-			voices = await speechSynthesis.getVoices();
-
-			// do your loop
-			if (voices.length > 0) {
-				clearInterval(getVoicesLoop);
+	const getVoices = async () => {
+		if (TTSEngine === 'browser-kokoro') {
+			if (!TTSModel) {
+				await loadKokoro();
 			}
-		}, 100);
-	};
 
-	const toggleConversationMode = async () => {
-		conversationMode = !conversationMode;
+			voices = Object.entries(TTSModel.voices).map(([key, value]) => {
+				return {
+					id: key,
+					name: value.name,
+					localService: false
+				};
+			});
+		} else {
+			if ($config.audio.tts.engine === '') {
+				const getVoicesLoop = setInterval(async () => {
+					voices = await speechSynthesis.getVoices();
 
-		if (conversationMode) {
-			responseAutoPlayback = true;
-			speechAutoSend = true;
+					// do your loop
+					if (voices.length > 0) {
+						clearInterval(getVoicesLoop);
+					}
+				}, 100);
+			} else {
+				const res = await _getVoices(localStorage.token).catch((e) => {
+					toast.error(`${e}`);
+				});
+
+				if (res) {
+					console.log(res);
+					voices = res.voices;
+				}
+			}
 		}
-
-		saveSettings({
-			conversationMode: conversationMode,
-			responseAutoPlayback: responseAutoPlayback,
-			speechAutoSend: speechAutoSend
-		});
 	};
 
-	const toggleResponseAutoPlayback = async () => {
-		responseAutoPlayback = !responseAutoPlayback;
+	const setResponseAutoPlayback = async (enabled: boolean) => {
+		responseAutoPlayback = enabled;
 		saveSettings({ responseAutoPlayback: responseAutoPlayback });
 	};
 
-	const toggleSpeechAutoSend = async () => {
-		speechAutoSend = !speechAutoSend;
+	const setSpeechAutoSend = async (enabled: boolean) => {
+		speechAutoSend = enabled;
 		saveSettings({ speechAutoSend: speechAutoSend });
 	};
 
-	const updateConfigHandler = async () => {
-		if (TTSEngine === 'openai') {
-			const res = await updateAudioConfig(localStorage.token, {
-				url: OpenAIUrl,
-				key: OpenAIKey,
-				model: model,
-				speaker: speaker
-			});
+	onMount(async () => {
+		playbackRate = $settings.audio?.tts?.playbackRate ?? 1;
+		conversationMode = $settings.conversationMode ?? false;
+		speechAutoSend = $settings.speechAutoSend ?? false;
+		responseAutoPlayback = $settings.responseAutoPlayback ?? false;
 
-			if (res) {
-				OpenAIUrl = res.OPENAI_API_BASE_URL;
-				OpenAIKey = res.OPENAI_API_KEY;
-				model = res.OPENAI_API_MODEL;
-				speaker = res.OPENAI_API_VOICE;
-			}
+		STTEngine = $settings?.audio?.stt?.engine ?? '';
+		STTLanguage = $settings?.audio?.stt?.language ?? '';
+
+		TTSEngine = $settings?.audio?.tts?.engine ?? '';
+		TTSEngineConfig = $settings?.audio?.tts?.engineConfig ?? {};
+
+		if ($settings?.audio?.tts?.defaultVoice === $config.audio.tts.voice) {
+			voice = $settings?.audio?.tts?.voice ?? $config.audio.tts.voice ?? '';
+		} else {
+			voice = $config.audio.tts.voice ?? '';
+		}
+
+		nonLocalVoices = $settings.audio?.tts?.nonLocalVoices ?? false;
+
+		await getVoices();
+	});
+
+	$: if (TTSEngine && TTSEngineConfig) {
+		onTTSEngineChange();
+	}
+
+	const onTTSEngineChange = async () => {
+		if (TTSEngine === 'browser-kokoro') {
+			await loadKokoro();
 		}
 	};
 
-	onMount(async () => {
-		let settings = JSON.parse(localStorage.getItem('settings') ?? '{}');
+	const loadKokoro = async () => {
+		if (TTSEngine === 'browser-kokoro') {
+			voices = [];
 
-		conversationMode = settings.conversationMode ?? false;
-		speechAutoSend = settings.speechAutoSend ?? false;
-		responseAutoPlayback = settings.responseAutoPlayback ?? false;
+			if (TTSEngineConfig?.dtype) {
+				TTSModel = null;
+				TTSModelProgress = null;
+				TTSModelLoading = true;
 
-		STTEngine = settings?.audio?.STTEngine ?? '';
-		TTSEngine = settings?.audio?.TTSEngine ?? '';
-		speaker = settings?.audio?.speaker ?? '';
-		model = settings?.audio?.model ?? '';
+				const model_id = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
-		if (TTSEngine === 'openai') {
-			getOpenAIVoices();
-			getOpenAIVoicesModel();
-		} else {
-			getWebAPIVoices();
-		}
+				const { KokoroTTS } = await import('kokoro-js');
+				const adapter = await navigator?.gpu?.requestAdapter().catch(() => null);
+				TTSModel = await KokoroTTS.from_pretrained(model_id, {
+					dtype: TTSEngineConfig.dtype, // Options: "fp32", "fp16", "q8", "q4", "q4f16"
+					device: adapter ? 'webgpu' : 'wasm', // Detect WebGPU
+					progress_callback: (e) => {
+						TTSModelProgress = e;
+						console.log(e);
+					}
+				});
 
-		if ($user.role === 'admin') {
-			const res = await getAudioConfig(localStorage.token);
+				await getVoices();
 
-			if (res) {
-				OpenAIUrl = res.OPENAI_API_BASE_URL;
-				OpenAIKey = res.OPENAI_API_KEY;
-				model = res.OPENAI_API_MODEL;
-				speaker = res.OPENAI_API_VOICE;
+				// const blobUrl = URL.createObjectURL(await rawAudio.toBlob());
+				// const audio = new Audio(blobUrl);
+
+				// audio.play();
 			}
 		}
-	});
+	};
 </script>
 
 <form
-	class="flex flex-col h-full justify-between space-y-3 text-sm"
+	id="tab-audio"
+	class="flex flex-col h-full justify-between text-sm"
 	on:submit|preventDefault={async () => {
-		if ($user.role === 'admin') {
-			await updateConfigHandler();
-		}
 		saveSettings({
 			audio: {
-				STTEngine: STTEngine !== '' ? STTEngine : undefined,
-				TTSEngine: TTSEngine !== '' ? TTSEngine : undefined,
-				speaker: speaker !== '' ? speaker : undefined,
-				model: model !== '' ? model : undefined
+				stt: {
+					engine: STTEngine !== '' ? STTEngine : undefined,
+					language: STTLanguage !== '' ? STTLanguage : undefined
+				},
+				tts: {
+					engine: TTSEngine !== '' ? TTSEngine : undefined,
+					engineConfig: TTSEngineConfig,
+					playbackRate: playbackRate,
+					voice: voice !== '' ? voice : undefined,
+					defaultVoice: $config?.audio?.tts?.voice ?? '',
+					nonLocalVoices: $config.audio.tts.engine === '' ? nonLocalVoices : undefined
+				}
 			}
 		});
 		dispatch('save');
 	}}
 >
-	<div class=" space-y-3 pr-1.5 overflow-y-scroll max-h-[25rem]">
-		<div>
-			<div class=" mb-1 text-sm font-medium">{$i18n.t('STT Settings')}</div>
+	<h2 class="text-sm font-medium text-gray-900 dark:text-white mb-4">
+		{$i18n.t('settings.personal.audio.title')}
+	</h2>
 
-			<div class=" py-0.5 flex w-full justify-between">
-				<div class=" self-center text-xs font-medium">{$i18n.t('Speech-to-Text Engine')}</div>
-				<div class="flex items-center relative">
-					<select
-						class="dark:bg-gray-900 w-fit pr-8 rounded px-2 p-1 text-xs bg-transparent outline-none text-right"
-						bind:value={STTEngine}
-						placeholder="Select a mode"
-						on:change={(e) => {
-							if (e.target.value !== '') {
-								navigator.mediaDevices.getUserMedia({ audio: true }).catch(function (err) {
-									toast.error(
-										$i18n.t(`Permission denied when accessing microphone: {{error}}`, {
-											error: err
-										})
-									);
-									STTEngine = '';
-								});
-							}
-						}}
+	<div class="flex-1 min-h-0 overflow-y-auto scrollbar-hover pr-1.5">
+		<UserSettingSection title={$i18n.t('settings.personal.audio.sections.sttSettings.title')} first>
+			{#if $config.audio.stt.engine !== 'web'}
+				{#if $visibleControls['settings.speech_to_text_engine']}
+					<UserSettingRow
+						label={$i18n.t('settings.personal.audio.speechToTextEngine.label')}
+						description={$i18n.t('settings.personal.audio.speechToTextEngine.description')}
 					>
-						<option value="">{$i18n.t('Default (Web API)')}</option>
-						<option value="whisper-local">{$i18n.t('Whisper (Local)')}</option>
-					</select>
-				</div>
-			</div>
-
-			<div class=" py-0.5 flex w-full justify-between">
-				<div class=" self-center text-xs font-medium">{$i18n.t('Conversation Mode')}</div>
-
-				<button
-					class="p-1 px-3 text-xs flex rounded transition"
-					on:click={() => {
-						toggleConversationMode();
-					}}
-					type="button"
-				>
-					{#if conversationMode === true}
-						<span class="ml-2 self-center">{$i18n.t('On')}</span>
-					{:else}
-						<span class="ml-2 self-center">{$i18n.t('Off')}</span>
-					{/if}
-				</button>
-			</div>
-
-			<div class=" py-0.5 flex w-full justify-between">
-				<div class=" self-center text-xs font-medium">
-					{$i18n.t('Auto-send input after 3 sec.')}
-				</div>
-
-				<button
-					class="p-1 px-3 text-xs flex rounded transition"
-					on:click={() => {
-						toggleSpeechAutoSend();
-					}}
-					type="button"
-				>
-					{#if speechAutoSend === true}
-						<span class="ml-2 self-center">{$i18n.t('On')}</span>
-					{:else}
-						<span class="ml-2 self-center">{$i18n.t('Off')}</span>
-					{/if}
-				</button>
-			</div>
-		</div>
-
-		<div>
-			<div class=" mb-1 text-sm font-medium">{$i18n.t('TTS Settings')}</div>
-
-			<div class=" py-0.5 flex w-full justify-between">
-				<div class=" self-center text-xs font-medium">{$i18n.t('Text-to-Speech Engine')}</div>
-				<div class="flex items-center relative">
-					<select
-						class=" dark:bg-gray-900 w-fit pr-8 rounded px-2 p-1 text-xs bg-transparent outline-none text-right"
-						bind:value={TTSEngine}
-						placeholder="Select a mode"
-						on:change={(e) => {
-							if (e.target.value === 'openai') {
-								getOpenAIVoices();
-								speaker = 'alloy';
-								model = 'tts-1';
-							} else {
-								getWebAPIVoices();
-								speaker = '';
-							}
-						}}
-					>
-						<option value="">{$i18n.t('Default (Web API)')}</option>
-						<option value="openai">{$i18n.t('Open AI')}</option>
-					</select>
-				</div>
-			</div>
-
-			{#if $user.role === 'admin'}
-				{#if TTSEngine === 'openai'}
-					<div class="mt-1 flex gap-2 mb-1">
-						<input
-							class="w-full rounded-lg py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-850 outline-none"
-							placeholder={$i18n.t('API Base URL')}
-							bind:value={OpenAIUrl}
-							required
-						/>
-
-						<input
-							class="w-full rounded-lg py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-850 outline-none"
-							placeholder={$i18n.t('API Key')}
-							bind:value={OpenAIKey}
-							required
-						/>
-					</div>
+						<SettingsSelect
+							bind:value={STTEngine}
+							ariaLabel={$i18n.t('settings.personal.audio.speechToTextEngine.label')}
+							placeholder={$i18n.t('Select an engine')}
+						>
+							<option value="">{$i18n.t('Default')}</option>
+							<option value="web">{$i18n.t('Web API')}</option>
+						</SettingsSelect>
+					</UserSettingRow>
 				{/if}
+
+				<UserSettingRow
+					label={$i18n.t('settings.personal.audio.language.label')}
+					description={$i18n.t('settings.personal.audio.language.description')}
+				>
+					<Tooltip
+						content={$i18n.t(
+							'The language of the input audio. Supplying the input language in ISO-639-1 (e.g. en) format will improve accuracy and latency. Leave blank to automatically detect the language.'
+						)}
+						placement="top"
+					>
+						<input
+							type="text"
+							bind:value={STTLanguage}
+							aria-label={$i18n.t('Speech-to-Text Language')}
+							placeholder={$i18n.t('e.g. en')}
+							class="h-7 w-24 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-right text-xs text-gray-700 outline-hidden transition-colors placeholder:text-gray-300 focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:placeholder:text-gray-700 dark:focus:border-blue-500"
+						/>
+					</Tooltip>
+				</UserSettingRow>
 			{/if}
 
-			<div class=" py-0.5 flex w-full justify-between">
-				<div class=" self-center text-xs font-medium">{$i18n.t('Auto-playback response')}</div>
-
-				<button
-					class="p-1 px-3 text-xs flex rounded transition"
-					on:click={() => {
-						toggleResponseAutoPlayback();
+			<UserSettingRow
+				let:labelId
+				label={$i18n.t('settings.personal.audio.instantAutoSendAfterVoiceTranscription.label')}
+				description={$i18n.t(
+					'settings.personal.audio.instantAutoSendAfterVoiceTranscription.description'
+				)}
+			>
+				<Switch
+					ariaLabelledbyId={labelId}
+					state={speechAutoSend}
+					ariaLabel={$i18n.t(
+						'settings.personal.audio.instantAutoSendAfterVoiceTranscription.label'
+					)}
+					on:change={(event) => {
+						setSpeechAutoSend(event.detail);
 					}}
-					type="button"
+				/>
+			</UserSettingRow>
+		</UserSettingSection>
+
+		<UserSettingSection title={$i18n.t('settings.personal.audio.sections.ttsSettings.title')}>
+			{#if $visibleControls['settings.text_to_speech_engine']}
+				<UserSettingRow
+					label={$i18n.t('settings.personal.audio.textToSpeechEngine.label')}
+					description={$i18n.t('settings.personal.audio.textToSpeechEngine.description')}
 				>
-					{#if responseAutoPlayback === true}
-						<span class="ml-2 self-center">{$i18n.t('On')}</span>
-					{:else}
-						<span class="ml-2 self-center">{$i18n.t('Off')}</span>
-					{/if}
-				</button>
-			</div>
-		</div>
+					<SettingsSelect
+						bind:value={TTSEngine}
+						ariaLabel={$i18n.t('settings.personal.audio.textToSpeechEngine.label')}
+						placeholder={$i18n.t('Select an engine')}
+					>
+						<option value="">{$i18n.t('Default')}</option>
+						<option value="browser-kokoro">{$i18n.t('Kokoro.js (Browser)')}</option>
+					</SettingsSelect>
+				</UserSettingRow>
+			{/if}
 
-		<hr class=" dark:border-gray-700" />
+			{#if TTSEngine === 'browser-kokoro'}
+				<UserSettingRow
+					label={$i18n.t('settings.personal.audio.kokoroJsDtype.label')}
+					description={$i18n.t('settings.personal.audio.kokoroJsDtype.description')}
+				>
+					<SettingsSelect
+						bind:value={TTSEngineConfig.dtype}
+						ariaLabel={$i18n.t('settings.personal.audio.kokoroJsDtype.label')}
+						placeholder={$i18n.t('Select dtype')}
+					>
+						<option value="" disabled selected>{$i18n.t('Select dtype')}</option>
+						<option value="fp32">fp32</option>
+						<option value="fp16">fp16</option>
+						<option value="q8">q8</option>
+						<option value="q4">q4</option>
+					</SettingsSelect>
+				</UserSettingRow>
+			{/if}
 
-		{#if TTSEngine === ''}
-			<div>
-				<div class=" mb-2.5 text-sm font-medium">{$i18n.t('Set Voice')}</div>
-				<div class="flex w-full">
-					<div class="flex-1">
-						<select
-							class="w-full rounded-lg py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-850 outline-none"
-							bind:value={speaker}
-							placeholder="Select a voice"
-						>
-							<option value="" selected>{$i18n.t('Default')}</option>
-							{#each voices.filter((v) => v.localService === true) as voice}
-								<option value={voice.name} class="bg-gray-100 dark:bg-gray-700">{voice.name}</option
-								>
-							{/each}
-						</select>
-					</div>
+			<UserSettingRow
+				let:labelId
+				label={$i18n.t('settings.personal.audio.autoPlaybackResponse.label')}
+				description={$i18n.t('settings.personal.audio.autoPlaybackResponse.description')}
+			>
+				<Switch
+					ariaLabelledbyId={labelId}
+					state={responseAutoPlayback}
+					ariaLabel={$i18n.t('settings.personal.audio.autoPlaybackResponse.label')}
+					on:change={(event) => {
+						setResponseAutoPlayback(event.detail);
+					}}
+				/>
+			</UserSettingRow>
+
+			<UserSettingRow
+				label={$i18n.t('settings.personal.audio.speechPlaybackSpeed.label')}
+				description={$i18n.t('settings.personal.audio.speechPlaybackSpeed.description')}
+			>
+				<div class="relative flex items-center gap-1.5 text-xs text-gray-400 dark:text-gray-600">
+					<input
+						type="number"
+						min="0"
+						step="0.01"
+						bind:value={playbackRate}
+						aria-label={$i18n.t('settings.personal.audio.speechPlaybackSpeed.label')}
+						class="h-7 w-16 rounded-lg border border-gray-100/50 bg-gray-50/40 px-2 text-right text-xs text-gray-700 outline-hidden transition-colors focus:border-blue-400 dark:border-white/[0.04] dark:bg-white/[0.03] dark:text-gray-300 dark:focus:border-blue-500"
+					/>
+					x
 				</div>
-			</div>
-		{:else if TTSEngine === 'openai'}
-			<div>
-				<div class=" mb-2.5 text-sm font-medium">{$i18n.t('Set Voice')}</div>
-				<div class="flex w-full">
-					<div class="flex-1">
+			</UserSettingRow>
+		</UserSettingSection>
+
+		{#if TTSEngine === 'browser-kokoro'}
+			{#if TTSModel}
+				<UserSettingSection title={$i18n.t('settings.personal.audio.sections.voice.title')}>
+					<UserSettingField
+						label={$i18n.t('settings.personal.audio.kokoroVoice.label')}
+						description={$i18n.t('settings.personal.audio.kokoroVoice.description')}
+					>
 						<input
 							list="voice-list"
-							class="w-full rounded-lg py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-850 outline-none"
-							bind:value={speaker}
-							placeholder="Select a voice"
+							class={inputClass}
+							bind:value={voice}
+							aria-label={$i18n.t('settings.personal.audio.sections.voice.title')}
+							placeholder={$i18n.t('Select a voice')}
 						/>
 
 						<datalist id="voice-list">
 							{#each voices as voice}
-								<option value={voice.name} />
+								<option value={voice.id}>{voice.name}</option>
 							{/each}
 						</datalist>
-					</div>
-				</div>
-			</div>
-			<div>
-				<div class=" mb-2.5 text-sm font-medium">{$i18n.t('Set Model')}</div>
-				<div class="flex w-full">
-					<div class="flex-1">
-						<input
-							list="model-list"
-							class="w-full rounded-lg py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-850 outline-none"
-							bind:value={model}
-							placeholder="Select a model"
-						/>
+					</UserSettingField>
+				</UserSettingSection>
+			{:else}
+				<UserSettingSection title={$i18n.t('settings.personal.audio.sections.voice.title')}>
+					<div class="flex items-center gap-2 text-xs text-gray-600 dark:text-gray-400">
+						<Spinner className="size-4" />
 
-						<datalist id="model-list">
-							{#each models as model}
-								<option value={model.name} />
-							{/each}
-						</datalist>
+						<div class="shimmer">
+							{$i18n.t('Loading Kokoro.js...')}
+							{TTSModelProgress && TTSModelProgress.status === 'progress'
+								? `(${Math.round(TTSModelProgress.progress * 10) / 10}%)`
+								: ''}
+						</div>
 					</div>
-				</div>
-			</div>
+
+					<div class="text-[0.6875rem] text-gray-400 dark:text-gray-600">
+						{$i18n.t('Please do not close the settings page while loading the model.')}
+					</div>
+				</UserSettingSection>
+			{/if}
+		{:else if $config.audio.tts.engine === ''}
+			<UserSettingSection title={$i18n.t('settings.personal.audio.sections.voice.title')}>
+				<UserSettingField
+					label={$i18n.t('settings.personal.audio.browserVoice.label')}
+					description={$i18n.t('settings.personal.audio.browserVoice.description')}
+				>
+					<SettingsSelect
+						bind:value={voice}
+						className="w-full"
+						ariaLabel={$i18n.t('settings.personal.audio.sections.voice.title')}
+					>
+						<option value="" selected={voice !== ''}>{$i18n.t('Default')}</option>
+						{#each voices.filter((v) => nonLocalVoices || v.localService === true) as _voice}
+							<option
+								value={_voice.voiceURI}
+								class="bg-gray-100 dark:bg-gray-700"
+								selected={voice === _voice.voiceURI}>{_voice.name}</option
+							>
+						{/each}
+					</SettingsSelect>
+				</UserSettingField>
+				<UserSettingRow
+					let:labelId
+					label={$i18n.t('settings.personal.audio.allowNonLocalVoices.label')}
+					description={$i18n.t('settings.personal.audio.allowNonLocalVoices.description')}
+				>
+					<Switch ariaLabelledbyId={labelId} bind:state={nonLocalVoices} />
+				</UserSettingRow>
+			</UserSettingSection>
+		{:else if $config.audio.tts.engine !== ''}
+			<UserSettingSection title={$i18n.t('settings.personal.audio.sections.voice.title')}>
+				<UserSettingField
+					label={$i18n.t('settings.personal.audio.serviceVoice.label')}
+					description={$i18n.t('settings.personal.audio.serviceVoice.description')}
+				>
+					<input
+						list="voice-list"
+						class={inputClass}
+						bind:value={voice}
+						aria-label={$i18n.t('settings.personal.audio.sections.voice.title')}
+						placeholder={$i18n.t('Select a voice')}
+					/>
+
+					<datalist id="voice-list">
+						{#each voices as voice}
+							<option value={voice.id}>{voice.name}</option>
+						{/each}
+					</datalist>
+				</UserSettingField>
+			</UserSettingSection>
 		{/if}
 	</div>
 
-	<div class="flex justify-end text-sm font-medium">
+	<div class="shrink-0 flex justify-end text-sm font-normal">
 		<button
-			class=" px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-gray-100 transition rounded-lg"
+			class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs font-normal text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
 			type="submit"
 		>
 			{$i18n.t('Save')}

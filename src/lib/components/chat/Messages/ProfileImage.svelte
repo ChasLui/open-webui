@@ -1,21 +1,26 @@
 <script lang="ts">
-	import { settings } from '$lib/stores';
 	import { WEBUI_BASE_URL } from '$lib/constants';
+	import { safeImageUrl } from '$lib/utils/safeImageUrl';
 
-	export let src = '/user.png';
+	export let className = 'size-8';
+	// LICENSE covers this Open WebUI fallback logo.
+	// Do not alter, remove, obscure, or replace it except as LICENSE permits:
+	// https://docs.openwebui.com/license.
+	const FALLBACK_SRC = `${WEBUI_BASE_URL}/static/favicon.png`;
+
+	export let src = FALLBACK_SRC;
+	export let allowExternal = false;
 </script>
 
-<div class={($settings?.chatDirection ?? 'LTR') === 'LTR' ? 'mr-3' : 'ml-3'}>
-	<img
-		crossorigin="anonymous"
-		src={src.startsWith(WEBUI_BASE_URL) ||
-		src.startsWith('https://www.gravatar.com/avatar/') ||
-		src.startsWith('data:') ||
-		src.startsWith('/')
-			? src
-			: `/user.png`}
-		class=" w-8 object-cover rounded-full"
-		alt="profile"
-		draggable="false"
-	/>
-</div>
+<img
+	aria-hidden="true"
+	src={safeImageUrl(src, allowExternal)}
+	class=" {className} object-cover rounded-2xl"
+	alt="profile"
+	draggable="false"
+	on:error={(e) => {
+		if (!e.currentTarget.src.endsWith(FALLBACK_SRC)) {
+			e.currentTarget.src = FALLBACK_SRC;
+		}
+	}}
+/>

@@ -1,261 +1,168 @@
 <script lang="ts">
-	import { models, user } from '$lib/stores';
-	import { createEventDispatcher, onMount, getContext } from 'svelte';
-	const dispatch = createEventDispatcher();
-
-	import { getOllamaUrls, getOllamaVersion, updateOllamaUrls } from '$lib/apis/ollama';
-	import {
-		getOpenAIConfig,
-		getOpenAIKeys,
-		getOpenAIUrls,
-		updateOpenAIConfig,
-		updateOpenAIKeys,
-		updateOpenAIUrls
-	} from '$lib/apis/openai';
-	import { toast } from 'svelte-sonner';
-	import Switch from '$lib/components/common/Switch.svelte';
+	import { onMount, getContext } from 'svelte';
 
 	const i18n = getContext('i18n');
 
-	export let getModels: Function;
+	import { settings } from '$lib/stores';
 
-	// External
-	let OLLAMA_BASE_URLS = [''];
+	import Spinner from '$lib/components/common/Spinner.svelte';
+	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import Plus from '$lib/components/icons/Plus.svelte';
+	import Connection from './Connections/Connection.svelte';
 
-	let OPENAI_API_KEYS = [''];
-	let OPENAI_API_BASE_URLS = [''];
+	import AddConnectionModal from '$lib/components/AddConnectionModal.svelte';
 
-	let ENABLE_OPENAI_API = false;
+	export let saveSettings: Function;
 
-	const updateOpenAIHandler = async () => {
-		OPENAI_API_BASE_URLS = await updateOpenAIUrls(localStorage.token, OPENAI_API_BASE_URLS);
-		OPENAI_API_KEYS = await updateOpenAIKeys(localStorage.token, OPENAI_API_KEYS);
+	let config = null;
 
-		await models.set(await getModels());
+	let showConnectionModal = false;
+
+	const addConnectionHandler = async (connection) => {
+		config.OPENAI_API_BASE_URLS.push(connection.url);
+		config.OPENAI_API_KEYS.push(connection.key);
+		config.OPENAI_API_CONFIGS[config.OPENAI_API_BASE_URLS.length - 1] = connection.config;
+
+		await updateHandler();
 	};
 
-	const updateOllamaUrlsHandler = async () => {
-		OLLAMA_BASE_URLS = await updateOllamaUrls(localStorage.token, OLLAMA_BASE_URLS);
+	const updateHandler = async () => {
+		// Remove trailing slashes
+		config.OPENAI_API_BASE_URLS = config.OPENAI_API_BASE_URLS.map((url) => url.replace(/\/$/, ''));
 
-		const ollamaVersion = await getOllamaVersion(localStorage.token).catch((error) => {
-			toast.error(error);
-			return null;
-		});
+		// Check if API KEYS length is same than API URLS length
+		if (config.OPENAI_API_KEYS.length !== config.OPENAI_API_BASE_URLS.length) {
+			// if there are more keys than urls, remove the extra keys
+			if (config.OPENAI_API_KEYS.length > config.OPENAI_API_BASE_URLS.length) {
+				config.OPENAI_API_KEYS = config.OPENAI_API_KEYS.slice(
+					0,
+					config.OPENAI_API_BASE_URLS.length
+				);
+			}
 
-		if (ollamaVersion) {
-			toast.success($i18n.t('Server connection verified'));
-			await models.set(await getModels());
+			// if there are more urls than keys, add empty keys
+			if (config.OPENAI_API_KEYS.length < config.OPENAI_API_BASE_URLS.length) {
+				const diff = config.OPENAI_API_BASE_URLS.length - config.OPENAI_API_KEYS.length;
+				for (let i = 0; i < diff; i++) {
+					config.OPENAI_API_KEYS.push('');
+				}
+			}
 		}
+
+		await saveSettings({
+			directConnections: config
+		});
 	};
 
 	onMount(async () => {
-		if ($user.role === 'admin') {
-			OLLAMA_BASE_URLS = await getOllamaUrls(localStorage.token);
-
-			const config = await getOpenAIConfig(localStorage.token);
-			ENABLE_OPENAI_API = config.ENABLE_OPENAI_API;
-
-			OPENAI_API_BASE_URLS = await getOpenAIUrls(localStorage.token);
-			OPENAI_API_KEYS = await getOpenAIKeys(localStorage.token);
-		}
+		config = $settings?.directConnections ?? {
+			OPENAI_API_BASE_URLS: [],
+			OPENAI_API_KEYS: [],
+			OPENAI_API_CONFIGS: {}
+		};
 	});
 </script>
 
+<AddConnectionModal direct bind:show={showConnectionModal} onSubmit={addConnectionHandler} />
+
 <form
+	id="tab-connections"
 	class="flex flex-col h-full justify-between text-sm"
 	on:submit|preventDefault={() => {
-		updateOpenAIHandler();
-		dispatch('save');
+		updateHandler();
 	}}
 >
-	<div class="  pr-1.5 overflow-y-scroll max-h-[25rem] space-y-3">
-		<div class=" space-y-3">
-			<div class="mt-2 space-y-2 pr-1.5">
-				<div class="flex justify-between items-center text-sm">
-					<div class="  font-medium">{$i18n.t('OpenAI API')}</div>
+	<h2 class="text-sm font-medium text-gray-900 dark:text-white mb-4">
+		{$i18n.t('settings.personal.connections.title')}
+	</h2>
 
-					<div class="mt-1">
-						<Switch
-							bind:state={ENABLE_OPENAI_API}
-							on:change={async () => {
-								updateOpenAIConfig(localStorage.token, ENABLE_OPENAI_API);
+	<div class="flex flex-1 min-h-0 flex-col overflow-y-auto scrollbar-hover pr-1.5">
+		{#if config !== null}
+			<section class="space-y-3" aria-labelledby="direct-connections-heading">
+				<div class="flex items-start justify-between gap-3">
+					<div class="min-w-0">
+						<h3 id="direct-connections-heading" class="text-xs text-gray-600 dark:text-gray-400">
+							{$i18n.t('settings.personal.connections.sections.directConnections.title')}
+						</h3>
+						<p class="mt-1 text-[0.6875rem] leading-relaxed text-gray-400 dark:text-gray-600">
+							{$i18n.t('settings.personal.connections.addConnection.description')}
+						</p>
+					</div>
+
+					<Tooltip content={$i18n.t('settings.personal.connections.addConnection.label')}>
+						<button
+							class="flex size-7 shrink-0 items-center justify-center rounded-lg text-gray-400 transition-colors hover:bg-black/5 hover:text-gray-900 dark:text-gray-600 dark:hover:bg-white/5 dark:hover:text-white"
+							aria-label={$i18n.t('settings.personal.connections.addConnection.label')}
+							on:click={() => {
+								showConnectionModal = true;
+							}}
+							type="button"
+						>
+							<Plus />
+						</button>
+					</Tooltip>
+				</div>
+
+				<div class="flex flex-col gap-2">
+					{#each config?.OPENAI_API_BASE_URLS ?? [] as url, idx}
+						<Connection
+							bind:url
+							bind:key={config.OPENAI_API_KEYS[idx]}
+							bind:config={config.OPENAI_API_CONFIGS[idx]}
+							onSubmit={() => {
+								updateHandler();
+							}}
+							onDelete={() => {
+								config.OPENAI_API_BASE_URLS = config.OPENAI_API_BASE_URLS.filter(
+									(url, urlIdx) => idx !== urlIdx
+								);
+								config.OPENAI_API_KEYS = config.OPENAI_API_KEYS.filter(
+									(key, keyIdx) => idx !== keyIdx
+								);
+
+								let newConfig = {};
+								config.OPENAI_API_BASE_URLS.forEach((url, newIdx) => {
+									newConfig[newIdx] = config.OPENAI_API_CONFIGS[newIdx < idx ? newIdx : newIdx + 1];
+								});
+								config.OPENAI_API_CONFIGS = newConfig;
+								updateHandler();
 							}}
 						/>
-					</div>
-				</div>
-
-				{#if ENABLE_OPENAI_API}
-					<div class="flex flex-col gap-1">
-						{#each OPENAI_API_BASE_URLS as url, idx}
-							<div class="flex w-full gap-2">
-								<div class="flex-1">
-									<input
-										class="w-full rounded-lg py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-850 outline-none"
-										placeholder={$i18n.t('API Base URL')}
-										bind:value={url}
-										autocomplete="off"
-									/>
-								</div>
-
-								<div class="flex-1">
-									<input
-										class="w-full rounded-lg py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-850 outline-none"
-										placeholder={$i18n.t('API Key')}
-										bind:value={OPENAI_API_KEYS[idx]}
-										autocomplete="off"
-									/>
-								</div>
-								<div class="self-center flex items-center">
-									{#if idx === 0}
-										<button
-											class="px-1"
-											on:click={() => {
-												OPENAI_API_BASE_URLS = [...OPENAI_API_BASE_URLS, ''];
-												OPENAI_API_KEYS = [...OPENAI_API_KEYS, ''];
-											}}
-											type="button"
-										>
-											<svg
-												xmlns="http://www.w3.org/2000/svg"
-												viewBox="0 0 16 16"
-												fill="currentColor"
-												class="w-4 h-4"
-											>
-												<path
-													d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"
-												/>
-											</svg>
-										</button>
-									{:else}
-										<button
-											class="px-1"
-											on:click={() => {
-												OPENAI_API_BASE_URLS = OPENAI_API_BASE_URLS.filter(
-													(url, urlIdx) => idx !== urlIdx
-												);
-												OPENAI_API_KEYS = OPENAI_API_KEYS.filter((key, keyIdx) => idx !== keyIdx);
-											}}
-											type="button"
-										>
-											<svg
-												xmlns="http://www.w3.org/2000/svg"
-												viewBox="0 0 16 16"
-												fill="currentColor"
-												class="w-4 h-4"
-											>
-												<path d="M3.75 7.25a.75.75 0 0 0 0 1.5h8.5a.75.75 0 0 0 0-1.5h-8.5Z" />
-											</svg>
-										</button>
-									{/if}
-								</div>
-							</div>
-							<div class=" mb-1 text-xs text-gray-400 dark:text-gray-500">
-								{$i18n.t('WebUI will make requests to')}
-								<span class=" text-gray-200">'{url}/models'</span>
-							</div>
-						{/each}
-					</div>
-				{/if}
-			</div>
-		</div>
-
-		<hr class=" dark:border-gray-700" />
-
-		<div>
-			<div class=" mb-2.5 text-sm font-medium">{$i18n.t('Ollama Base URL')}</div>
-			<div class="flex w-full gap-1.5">
-				<div class="flex-1 flex flex-col gap-2">
-					{#each OLLAMA_BASE_URLS as url, idx}
-						<div class="flex gap-1.5">
-							<input
-								class="w-full rounded-lg py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-850 outline-none"
-								placeholder={$i18n.t('Enter URL (e.g. http://localhost:11434)')}
-								bind:value={url}
-							/>
-
-							<div class="self-center flex items-center">
-								{#if idx === 0}
-									<button
-										class="px-1"
-										on:click={() => {
-											OLLAMA_BASE_URLS = [...OLLAMA_BASE_URLS, ''];
-										}}
-										type="button"
-									>
-										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											viewBox="0 0 16 16"
-											fill="currentColor"
-											class="w-4 h-4"
-										>
-											<path
-												d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"
-											/>
-										</svg>
-									</button>
-								{:else}
-									<button
-										class="px-1"
-										on:click={() => {
-											OLLAMA_BASE_URLS = OLLAMA_BASE_URLS.filter((url, urlIdx) => idx !== urlIdx);
-										}}
-										type="button"
-									>
-										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											viewBox="0 0 16 16"
-											fill="currentColor"
-											class="w-4 h-4"
-										>
-											<path d="M3.75 7.25a.75.75 0 0 0 0 1.5h8.5a.75.75 0 0 0 0-1.5h-8.5Z" />
-										</svg>
-									</button>
-								{/if}
-							</div>
-						</div>
 					{/each}
 				</div>
+			</section>
 
-				<div class="">
-					<button
-						class="p-2.5 bg-gray-200 hover:bg-gray-300 dark:bg-gray-850 dark:hover:bg-gray-800 rounded-lg transition"
-						on:click={() => {
-							updateOllamaUrlsHandler();
-						}}
-						type="button"
-					>
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 20 20"
-							fill="currentColor"
-							class="w-4 h-4"
-						>
-							<path
-								fill-rule="evenodd"
-								d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
-								clip-rule="evenodd"
-							/>
-						</svg>
-					</button>
+			<div class="mt-6">
+				<div
+					class="space-y-3 border-t border-gray-100/50 pt-4 text-[0.6875rem] leading-relaxed text-gray-400 dark:border-white/[0.04] dark:text-gray-600"
+				>
+					<p>
+						{$i18n.t(
+							'Connections managed through the Admin Panel are recommended for everyday use. Direct connections provide convenient access to your own endpoints, but rely on your browser session to keep requests running, making them better suited to testing and temporary use.'
+						)}
+					</p>
+					<p>
+						<!-- LICENSE covers this Open WebUI wordmark.
+						Do not alter, remove, obscure, or replace it except as LICENSE permits:
+						https://docs.openwebui.com/license. -->
+						{$i18n.t(
+							'CORS must be properly configured by the provider to allow requests from Open WebUI.'
+						)}
+					</p>
 				</div>
 			</div>
-
-			<div class="mt-2 text-xs text-gray-400 dark:text-gray-500">
-				{$i18n.t('Trouble accessing Ollama?')}
-				<a
-					class=" text-gray-300 font-medium underline"
-					href="https://github.com/open-webui/open-webui#troubleshooting"
-					target="_blank"
-				>
-					{$i18n.t('Click here for help.')}
-				</a>
+		{:else}
+			<div class="flex h-full justify-center">
+				<div class="my-auto">
+					<Spinner className="size-6" />
+				</div>
 			</div>
-		</div>
+		{/if}
 	</div>
 
-	<div class="flex justify-end pt-3 text-sm font-medium">
+	<div class="shrink-0 flex justify-end pt-3 text-sm font-normal">
 		<button
-			class="  px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-gray-100 transition rounded-lg"
+			class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs font-normal text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
 			type="submit"
 		>
 			{$i18n.t('Save')}
